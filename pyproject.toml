@@ -1,0 +1,22 @@
+[project]
+name = "gupiaofenxi"
+version = "0.1.0"
+description = "A-share stock analysis assistant with FastAPI and multi-provider LLM support"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openai",
+    "python-dotenv",
+    "akshare",
+    "httpx",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A股智能分析助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; }
+    .msg-content p { margin-bottom: 0.5em; }
+    .msg-content ul, .msg-content ol { padding-left: 1.5em; margin-bottom: 0.5em; }
+    .msg-content li { margin-bottom: 0.25em; }
+    .msg-content strong { color: #34d399; }
+    .msg-content code { background: rgba(255,255,255,0.1); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; }
+    .msg-content pre { background: rgba(255,255,255,0.05); padding: 1em; border-radius: 8px; overflow-x: auto; margin-bottom: 0.5em; }
+    .msg-content pre code { background: none; padding: 0; }
+    .msg-content table { border-collapse: collapse; margin-bottom: 0.5em; width: 100%; }
+    .msg-content th, .msg-content td { border: 1px solid #334155; padding: 0.4em 0.8em; text-align: left; }
+    .msg-content th { background: rgba(255,255,255,0.05); }
+    .tool-badge { display: inline-block; font-size: 0.75rem; padding: 0.2em 0.6em; border-radius: 9999px; margin-right: 0.5em; margin-bottom: 0.5em; }
+    .status-chip { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.75rem; color: #94a3b8; margin-bottom: 0.75rem; }
+    .status-dot { width: 0.5rem; height: 0.5rem; border-radius: 9999px; background: #38bdf8; box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55); animation: pulse 1.6s infinite; }
+    .status-chip.slow { color: #fbbf24; }
+    .status-chip.slow .status-dot { background: #f59e0b; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.45); }
+    .status-chip.error { color: #f87171; }
+    .status-chip.error .status-dot { background: #ef4444; box-shadow: none; animation: none; }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55); }
+      70% { box-shadow: 0 0 0 10px rgba(56, 189, 248, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+  <div class="min-h-screen md:grid md:grid-cols-[280px_1fr]">
+    <aside class="border-b border-slate-800 bg-slate-900 p-4 md:border-b-0 md:border-r md:min-h-screen">
+      <div class="mb-4 flex items-center justify-between">
+        <h1 class="text-lg font-semibold">A股智能分析助手</h1>
+        <button id="new-chat" class="rounded bg-emerald-500 px-3 py-1 text-sm font-medium text-slate-950 hover:bg-emerald-400 transition-colors">新建</button>
+      </div>
+      <label class="mb-3 block text-sm text-slate-300" for="model-select">模型</label>
+      <select id="model-select" class="mb-4 w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"></select>
+      <label class="mb-4 flex items-center gap-2 text-sm text-slate-300">
+        <input id="debug-toggle" type="checkbox" class="rounded border-slate-600 bg-slate-950">
+        调试模式
+      </label>
+      <div id="conversation-list" class="space-y-1 max-h-[calc(100vh-220px)] overflow-y-auto"></div>
+    </aside>
+    <main class="flex min-h-screen flex-col">
+      <div id="messages" class="flex-1 space-y-4 overflow-y-auto p-4 md:p-6"></div>
+      <div id="debug-panel" class="hidden border-t border-slate-800 bg-slate-950/80 px-4 py-3 text-xs text-slate-300">
+        <div class="mx-auto max-w-4xl">
+          <div class="mb-2 flex items-center justify-between">
+            <strong class="text-slate-200">SSE 调试事件</strong>
+            <button id="debug-clear" type="button" class="rounded border border-slate-700 px-2 py-1 text-xs hover:bg-slate-800">清空</button>
+          </div>
+          <pre id="debug-log" class="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-900 p-3"></pre>
+        </div>
+      </div>
+      <form id="composer" class="border-t border-slate-800 bg-slate-900 p-4">
+        <div class="mx-auto flex max-w-4xl gap-3">
+          <textarea id="message-input" rows="2" class="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-emerald-500 transition-colors resize-none" placeholder="问我：帮我分析一下贵州茅台最近走势"></textarea>
+          <button id="send-btn" class="rounded-lg bg-emerald-500 px-5 py-3 font-medium text-slate-950 hover:bg-emerald-400 transition-colors self-end" type="submit">发送</button>
+        </div>
+      </form>
+    </main>
+  </div>
+
+  <script>
+    const conversationsKey = 'stock-chat-conversations';
+    const activeKey = 'stock-chat-active';
+    const listEl = document.getElementById('conversation-list');
+    const messagesEl = document.getElementById('messages');
+    const composer = document.getElementById('composer');
+    const inputEl = document.getElementById('message-input');
+    const modelEl = document.getElementById('model-select');
+    const newChatEl = document.getElementById('new-chat');
+    const sendBtn = document.getElementById('send-btn');
+    const debugToggleEl = document.getElementById('debug-toggle');
+    const debugPanelEl = document.getElementById('debug-panel');
+    const debugLogEl = document.getElementById('debug-log');
+    const debugClearEl = document.getElementById('debug-clear');
+
+    let conversations = loadConversations();
+    let activeId = localStorage.getItem(activeKey) || null;
+    if (!activeId || !conversations[activeId]) {
+      activeId = createConversation();
+    }
+
+    let isStreaming = false;
+    let debugEnabled = false;
+
+    async function init() {
+      await loadModels();
+      debugToggleEl.checked = localStorage.getItem('stock-chat-debug') === 'true';
+      setDebugMode(debugToggleEl.checked);
+      renderConversationList();
+      renderMessages();
+    }
+
+    function setDebugMode(enabled) {
+      debugEnabled = enabled;
+      debugPanelEl.classList.toggle('hidden', !enabled);
+      localStorage.setItem('stock-chat-debug', String(enabled));
+    }
+
+    function pushDebugEvent(label, payload) {
+      if (!debugEnabled) return;
+      const line = '[' + new Date().toLocaleTimeString() + '] ' + label + '\n' + JSON.stringify(payload, null, 2) + '\n\n';
+      debugLogEl.textContent += line;
+      debugLogEl.scrollTop = debugLogEl.scrollHeight;
+    }
+
+    function loadConversations() {
+      try { return JSON.parse(localStorage.getItem(conversationsKey) || '{}'); }
+      catch { return {}; }
+    }
+
+    function saveConversations() {
+      localStorage.setItem(conversationsKey, JSON.stringify(conversations));
+      localStorage.setItem(activeKey, activeId);
+    }
+
+    function createConversation() {
+      const id = crypto.randomUUID();
+      conversations[id] = { title: '新对话', messages: [] };
+      activeId = id;
+      saveConversations();
+      return id;
+    }
+
+    function renderConversationList() {
+      listEl.innerHTML = '';
+      const entries = Object.entries(conversations).reverse();
+      entries.forEach(([id, conversation]) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'w-full rounded-lg px-3 py-2 text-left text-sm truncate transition-colors '
+          + (id === activeId ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300' : 'bg-slate-800/50 border border-transparent text-slate-300 hover:bg-slate-800');
+        btn.textContent = conversation.title;
+        btn.onclick = () => {
+          if (isStreaming) return;
+          activeId = id;
+          saveConversations();
+          renderConversationList();
+          renderMessages();
+        };
+        listEl.appendChild(btn);
+      });
+    }
+
+    function renderMessages() {
+      messagesEl.innerHTML = '';
+      const conversation = conversations[activeId];
+      if (!conversation) return;
+      for (const msg of conversation.messages) {
+        appendMessageBubble(msg.role, msg.content);
+      }
+      scrollToBottom();
+    }
+
+    function appendMessageBubble(role, content) {
+      const div = document.createElement('div');
+      div.className = 'mx-auto max-w-4xl rounded-2xl px-4 py-3 '
+        + (role === 'user' ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-slate-900 border border-slate-800');
+      const label = document.createElement('div');
+      label.className = 'mb-1 text-xs uppercase tracking-wide text-slate-500';
+      label.textContent = role === 'user' ? 'You' : 'AI';
+      const body = document.createElement('div');
+      body.className = 'msg-content text-sm leading-relaxed';
+      if (role === 'assistant') {
+        body.innerHTML = marked.parse(content || '');
+      } else {
+        body.textContent = content;
+      }
+      div.appendChild(label);
+      div.appendChild(body);
+      messagesEl.appendChild(div);
+      return body;
+    }
+
+    function createAssistantBubbleWithStatus() {
+      const div = document.createElement('div');
+      div.className = 'mx-auto max-w-4xl rounded-2xl px-4 py-3 bg-slate-900 border border-slate-800';
+
+      const label = document.createElement('div');
+      label.className = 'mb-1 text-xs uppercase tracking-wide text-slate-500';
+      label.textContent = 'AI';
+
+      const status = document.createElement('div');
+      status.className = 'status-chip';
+      status.innerHTML = '<span class="status-dot"></span><span class="status-text">已发送请求</span>';
+
+      const body = document.createElement('div');
+      body.className = 'msg-content text-sm leading-relaxed';
+
+      div.appendChild(label);
+      div.appendChild(status);
+      div.appendChild(body);
+      messagesEl.appendChild(div);
+
+      return {
+        body,
+        status,
+        setStatus(text, kind = 'normal') {
+          status.className = 'status-chip' + (kind === 'slow' ? ' slow' : '') + (kind === 'error' ? ' error' : '');
+          status.querySelector('.status-text').textContent = text;
+        },
+        hideStatus() {
+          status.remove();
+        }
+      };
+    }
+
+    function scrollToBottom() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function setStreaming(val) {
+      isStreaming = val;
+      sendBtn.disabled = val;
+      sendBtn.textContent = val ? '分析中...' : '发送';
+      sendBtn.className = 'rounded-lg px-5 py-3 font-medium self-end transition-colors '
+        + (val ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400');
+    }
+
+    async function loadModels() {
+      const resp = await fetch('/models');
+      const models = await resp.json();
+      modelEl.innerHTML = '';
+      models.forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.label + ' (' + m.model_name + ')';
+        modelEl.appendChild(opt);
+      });
+    }
+
+    composer.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (isStreaming) return;
+      const content = inputEl.value.trim();
+      if (!content) return;
+      const conversation = conversations[activeId];
+      if (conversation.messages.length === 0) {
+        conversation.title = content.slice(0, 24);
+      }
+      conversation.messages.push({ role: 'user', content });
+      inputEl.value = '';
+      saveConversations();
+      renderConversationList();
+      appendMessageBubble('user', content);
+      scrollToBottom();
+      setStreaming(true);
+
+      const aiBubble = createAssistantBubbleWithStatus();
+      const aiBody = aiBubble.body;
+      let fullText = '';
+      let gotFirstToken = false;
+      const thinkingTimer = setTimeout(() => {
+        if (!gotFirstToken) aiBubble.setStatus('模型思考中');
+      }, 1000);
+      const slowTimer = setTimeout(() => {
+        if (!gotFirstToken) aiBubble.setStatus('响应较慢，仍在处理中', 'slow');
+      }, 8000);
+
+      try {
+        const response = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: activeId, model: modelEl.value, message: content, stream: true }),
+        });
+        pushDebugEvent('http-response', { status: response.status, ok: response.ok, model: modelEl.value });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const raw = line.slice(6);
+            if (!raw.trim()) continue;
+            let evt;
+            try { evt = JSON.parse(raw); } catch { continue; }
+            pushDebugEvent('sse-event', evt);
+
+            if (evt.type === 'token') {
+              if (!gotFirstToken) {
+                gotFirstToken = true;
+                clearTimeout(thinkingTimer);
+                clearTimeout(slowTimer);
+                aiBubble.setStatus('正在生成回答');
+              }
+              fullText += evt.content;
+              aiBody.innerHTML = marked.parse(fullText);
+              scrollToBottom();
+            } else if (evt.type === 'tool_call') {
+              aiBubble.setStatus('正在查询 ' + evt.name);
+              const badge = document.createElement('span');
+              badge.className = 'tool-badge bg-amber-500/20 text-amber-300 border border-amber-500/30';
+              badge.textContent = '查询: ' + evt.name;
+              aiBody.insertBefore(badge, aiBody.firstChild);
+              scrollToBottom();
+            } else if (evt.type === 'tool_result') {
+              if (!gotFirstToken) {
+                aiBubble.setStatus('模型思考中');
+              }
+            } else if (evt.type === 'done') {
+              clearTimeout(thinkingTimer);
+              clearTimeout(slowTimer);
+              const finalText = (typeof evt.assistant === 'string' && evt.assistant.length > 0) ? evt.assistant : fullText;
+              fullText = finalText;
+              aiBody.innerHTML = marked.parse(finalText);
+              aiBubble.hideStatus();
+              conversation.messages.push({ role: 'assistant', content: finalText });
+              saveConversations();
+              scrollToBottom();
+            } else if (evt.type === 'error') {
+              clearTimeout(thinkingTimer);
+              clearTimeout(slowTimer);
+              aiBubble.setStatus('请求失败', 'error');
+              aiBody.innerHTML = '<span class="text-red-400">Error: ' + escapeHtml(evt.message) + '</span>';
+            }
+          }
+        }
+      } catch (err) {
+        clearTimeout(thinkingTimer);
+        clearTimeout(slowTimer);
+        aiBubble.setStatus('网络错误', 'error');
+        aiBody.innerHTML = '<span class="text-red-400">Network error: ' + escapeHtml(err.message) + '</span>';
+        pushDebugEvent('network-error', { message: err.message });
+      }
+
+      setStreaming(false);
+    });
+
+    newChatEl.addEventListener('click', () => {
+      if (isStreaming) return;
+      createConversation();
+      renderConversationList();
+      renderMessages();
+      inputEl.focus();
+    });
+
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        composer.dispatchEvent(new Event('submit'));
+      }
+    });
+
+    debugToggleEl.addEventListener('change', () => {
+      setDebugMode(debugToggleEl.checked);
+    });
+
+    debugClearEl.addEventListener('click', () => {
+      debugLogEl.textContent = '';
+    });
+
+    function escapeHtml(v) {
+      return v.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+    }
+
+    init();
+  </script>
+</body>
+</html>
