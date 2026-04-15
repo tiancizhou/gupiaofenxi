@@ -81,6 +81,15 @@
     const debugPanelEl = document.getElementById('debug-panel');
     const debugLogEl = document.getElementById('debug-log');
     const debugClearEl = document.getElementById('debug-clear');
+    const toolLabels = {
+      get_stock_price: '查询个股行情',
+      get_stock_info: '查询股票信息',
+      get_financial_indicators: '查询财务指标',
+      get_stock_news: '查询个股新闻',
+      get_market_sentiment: '查询市场情绪',
+      get_global_news: '查询宏观新闻',
+      screen_stocks: '执行条件选股',
+    };
 
     let conversations = loadConversations();
     let activeId = localStorage.getItem(activeKey) || null;
@@ -88,8 +97,13 @@
       activeId = createConversation();
     }
 
-    let isStreaming = false;
+    const streamingSessions = {};
     let debugEnabled = false;
+    setInterval(() => {
+      if (Object.keys(streamingSessions).length > 0) {
+        renderConversationList();
+      }
+    }, 1000);
 
     async function init() {
       await loadModels();
@@ -107,9 +121,78 @@
 
     function pushDebugEvent(label, payload) {
       if (!debugEnabled) return;
-      const line = '[' + new Date().toLocaleTimeString() + '] ' + label + '\n' + JSON.stringify(payload, null, 2) + '\n\n';
+      const displayPayload = normalizeDebugPayload(payload);
+      const line = '[' + new Date().toLocaleTimeString() + '] ' + label + '\n' + JSON.stringify(displayPayload, null, 2) + '\n\n';
       debugLogEl.textContent += line;
       debugLogEl.scrollTop = debugLogEl.scrollHeight;
+    }
+
+    function getToolLabel(name) {
+      return toolLabels[name] || name;
+    }
+
+    function getSidebarStageLabel(session) {
+      if (!session) return '';
+      const elapsed = formatElapsed(session.startedAt);
+      if (session.statusKind === 'error') return '失败';
+      if (session.statusText.startsWith('正在查询 ')) {
+        return session.statusText.replace('正在查询 ', '查') + elapsed;
+      }
+      if (session.statusText === '已发送请求') return '排队中' + elapsed;
+      if (session.statusText === '模型思考中') return '思考中' + elapsed;
+      if (session.statusText === '响应较慢，仍在处理中') return '处理中' + elapsed;
+      if (session.statusText === '正在生成回答') return '生成中' + elapsed;
+      return '生成中' + elapsed;
+    }
+
+    function stopStreamingSession(conversationId) {
+      const session = streamingSessions[conversationId];
+      if (!session) return;
+      if (session.abortController) {
+        session.abortController.abort();
+      }
+      delete streamingSessions[conversationId];
+      renderConversationList();
+      if (activeId === conversationId) {
+        renderMessages();
+      } else {
+        setStreamingUi();
+      }
+      pushDebugEvent('stream-stopped', { conversation_id: conversationId });
+    }
+
+    function deleteConversation(conversationId) {
+      stopStreamingSession(conversationId);
+      delete conversations[conversationId];
+
+      if (activeId === conversationId) {
+        const remainingIds = Object.keys(conversations);
+        if (remainingIds.length === 0) {
+          createConversation();
+        } else {
+          activeId = remainingIds[remainingIds.length - 1];
+        }
+      }
+
+      saveConversations();
+      renderConversationList();
+      renderMessages();
+      pushDebugEvent('conversation-deleted', { conversation_id: conversationId });
+    }
+
+    function formatElapsed(startedAt) {
+      if (!startedAt) return '';
+      const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      return ' ' + seconds + 's';
+    }
+
+    function normalizeDebugPayload(payload) {
+      if (!payload || typeof payload !== 'object') return payload;
+      const next = { ...payload };
+      if (typeof next.name === 'string') {
+        next.tool_label = getToolLabel(next.name);
+      }
+      return next;
     }
 
     function loadConversations() {
@@ -138,14 +221,40 @@
         btn.type = 'button';
         btn.className = 'w-full rounded-lg px-3 py-2 text-left text-sm truncate transition-colors '
           + (id === activeId ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300' : 'bg-slate-800/50 border border-transparent text-slate-300 hover:bg-slate-800');
-        btn.textContent = conversation.title;
+        const session = streamingSessions[id];
+        const stageLabel = session ? getSidebarStageLabel(session) : '';
+        btn.innerHTML = '<div class="flex items-center justify-between gap-2"><span class="truncate">' + escapeHtml(conversation.title) + '</span>'
+          + (session ? '<span class="shrink-0 rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[10px] text-sky-300">' + escapeHtml(stageLabel) + '</span>' : '')
+          + '</div>';
         btn.onclick = () => {
-          if (isStreaming) return;
           activeId = id;
           saveConversations();
           renderConversationList();
           renderMessages();
         };
+        const actions = document.createElement('div');
+        actions.className = 'mt-1 flex items-center gap-2';
+        if (session) {
+          const stopBtn = document.createElement('button');
+          stopBtn.type = 'button';
+          stopBtn.className = 'text-[10px] text-slate-400 hover:text-red-300';
+          stopBtn.textContent = '停止';
+          stopBtn.onclick = (event) => {
+            event.stopPropagation();
+            stopStreamingSession(id);
+          };
+          actions.appendChild(stopBtn);
+        }
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'text-[10px] text-slate-500 hover:text-rose-300';
+        deleteBtn.textContent = '删除';
+        deleteBtn.onclick = (event) => {
+          event.stopPropagation();
+          deleteConversation(id);
+        };
+        actions.appendChild(deleteBtn);
+        btn.appendChild(actions);
         listEl.appendChild(btn);
       });
     }
@@ -157,6 +266,11 @@
       for (const msg of conversation.messages) {
         appendMessageBubble(msg.role, msg.content);
       }
+      const session = streamingSessions[activeId];
+      if (session) {
+        renderStreamingBubble(session);
+      }
+      setStreamingUi();
       scrollToBottom();
     }
 
@@ -213,16 +327,31 @@
       };
     }
 
+    function renderStreamingBubble(session) {
+      const bubble = createAssistantBubbleWithStatus();
+      bubble.setStatus(session.statusText, session.statusKind);
+      if (session.toolNames.length > 0) {
+        session.toolNames.forEach((toolName) => {
+          const badge = document.createElement('span');
+          badge.className = 'tool-badge bg-amber-500/20 text-amber-300 border border-amber-500/30';
+          badge.textContent = '查询: ' + getToolLabel(toolName);
+          bubble.body.insertBefore(badge, bubble.body.firstChild);
+        });
+      }
+      bubble.body.innerHTML += session.fullText ? marked.parse(session.fullText) : '';
+    }
+
     function scrollToBottom() {
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    function setStreaming(val) {
-      isStreaming = val;
-      sendBtn.disabled = val;
-      sendBtn.textContent = val ? '分析中...' : '发送';
+    function setStreamingUi() {
+      const currentSession = streamingSessions[activeId];
+      const isStreaming = Boolean(currentSession);
+      sendBtn.disabled = false;
+      sendBtn.textContent = isStreaming ? '停止' : '发送';
       sendBtn.className = 'rounded-lg px-5 py-3 font-medium self-end transition-colors '
-        + (val ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400');
+        + (isStreaming ? 'bg-red-500 text-white hover:bg-red-400' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400');
     }
 
     async function loadModels() {
@@ -239,9 +368,13 @@
 
     composer.addEventListener('submit', async (e) => {
       e.preventDefault();
-      if (isStreaming) return;
+      if (streamingSessions[activeId]) {
+        stopStreamingSession(activeId);
+        return;
+      }
       const content = inputEl.value.trim();
       if (!content) return;
+      const conversationId = activeId;
       const conversation = conversations[activeId];
       if (conversation.messages.length === 0) {
         conversation.title = content.slice(0, 24);
@@ -250,26 +383,46 @@
       inputEl.value = '';
       saveConversations();
       renderConversationList();
-      appendMessageBubble('user', content);
-      scrollToBottom();
-      setStreaming(true);
+      if (activeId === conversationId) {
+        appendMessageBubble('user', content);
+        scrollToBottom();
+      }
 
-      const aiBubble = createAssistantBubbleWithStatus();
-      const aiBody = aiBubble.body;
-      let fullText = '';
-      let gotFirstToken = false;
+      streamingSessions[conversationId] = {
+        fullText: '',
+        gotFirstToken: false,
+        toolNames: [],
+        statusText: '已发送请求',
+        statusKind: 'normal',
+        startedAt: Date.now(),
+        abortController: new AbortController(),
+      };
+      renderConversationList();
+      if (activeId === conversationId) {
+        renderMessages();
+      }
+
+      const session = streamingSessions[conversationId];
       const thinkingTimer = setTimeout(() => {
-        if (!gotFirstToken) aiBubble.setStatus('模型思考中');
+        if (streamingSessions[conversationId] && !session.gotFirstToken) {
+          session.statusText = '模型思考中';
+          if (activeId === conversationId) renderMessages();
+        }
       }, 1000);
       const slowTimer = setTimeout(() => {
-        if (!gotFirstToken) aiBubble.setStatus('响应较慢，仍在处理中', 'slow');
+        if (streamingSessions[conversationId] && !session.gotFirstToken) {
+          session.statusText = '响应较慢，仍在处理中';
+          session.statusKind = 'slow';
+          if (activeId === conversationId) renderMessages();
+        }
       }, 8000);
 
       try {
         const response = await fetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversation_id: activeId, model: modelEl.value, message: content, stream: true }),
+          body: JSON.stringify({ conversation_id: conversationId, model: modelEl.value, message: content, stream: true }),
+          signal: streamingSessions[conversationId].abortController.signal,
         });
         pushDebugEvent('http-response', { status: response.status, ok: response.ok, model: modelEl.value });
 
@@ -290,59 +443,79 @@
             let evt;
             try { evt = JSON.parse(raw); } catch { continue; }
             pushDebugEvent('sse-event', evt);
+            const liveSession = streamingSessions[conversationId];
+            if (!liveSession) continue;
 
             if (evt.type === 'token') {
-              if (!gotFirstToken) {
-                gotFirstToken = true;
+              if (!liveSession.gotFirstToken) {
+                liveSession.gotFirstToken = true;
                 clearTimeout(thinkingTimer);
                 clearTimeout(slowTimer);
-                aiBubble.setStatus('正在生成回答');
+                liveSession.statusText = '正在生成回答';
+                liveSession.statusKind = 'normal';
               }
-              fullText += evt.content;
-              aiBody.innerHTML = marked.parse(fullText);
-              scrollToBottom();
+              liveSession.fullText += evt.content;
+              if (activeId === conversationId) renderMessages();
             } else if (evt.type === 'tool_call') {
-              aiBubble.setStatus('正在查询 ' + evt.name);
-              const badge = document.createElement('span');
-              badge.className = 'tool-badge bg-amber-500/20 text-amber-300 border border-amber-500/30';
-              badge.textContent = '查询: ' + evt.name;
-              aiBody.insertBefore(badge, aiBody.firstChild);
-              scrollToBottom();
+              const toolLabel = getToolLabel(evt.name);
+              liveSession.statusText = '正在查询 ' + toolLabel;
+              if (!liveSession.toolNames.includes(evt.name)) {
+                liveSession.toolNames.push(evt.name);
+              }
+              renderConversationList();
+              if (activeId === conversationId) renderMessages();
             } else if (evt.type === 'tool_result') {
-              if (!gotFirstToken) {
-                aiBubble.setStatus('模型思考中');
+              if (!liveSession.gotFirstToken) {
+                liveSession.statusText = '模型思考中';
+                if (activeId === conversationId) renderMessages();
               }
             } else if (evt.type === 'done') {
               clearTimeout(thinkingTimer);
               clearTimeout(slowTimer);
-              const finalText = (typeof evt.assistant === 'string' && evt.assistant.length > 0) ? evt.assistant : fullText;
-              fullText = finalText;
-              aiBody.innerHTML = marked.parse(finalText);
-              aiBubble.hideStatus();
+              const finalText = (typeof evt.assistant === 'string' && evt.assistant.length > 0) ? evt.assistant : liveSession.fullText;
               conversation.messages.push({ role: 'assistant', content: finalText });
+              delete streamingSessions[conversationId];
               saveConversations();
-              scrollToBottom();
+              renderConversationList();
+              if (activeId === conversationId) renderMessages();
+              else setStreamingUi();
             } else if (evt.type === 'error') {
               clearTimeout(thinkingTimer);
               clearTimeout(slowTimer);
-              aiBubble.setStatus('请求失败', 'error');
-              aiBody.innerHTML = '<span class="text-red-400">Error: ' + escapeHtml(evt.message) + '</span>';
+              liveSession.statusText = '请求失败';
+              liveSession.statusKind = 'error';
+              liveSession.fullText = 'Error: ' + evt.message;
+              if (activeId === conversationId) renderMessages();
+              else {
+                renderConversationList();
+                setStreamingUi();
+              }
             }
           }
         }
       } catch (err) {
         clearTimeout(thinkingTimer);
         clearTimeout(slowTimer);
-        aiBubble.setStatus('网络错误', 'error');
-        aiBody.innerHTML = '<span class="text-red-400">Network error: ' + escapeHtml(err.message) + '</span>';
+        const liveSession = streamingSessions[conversationId];
+        if (err.name === 'AbortError') {
+          pushDebugEvent('stream-aborted', { conversation_id: conversationId });
+          return;
+        }
+        if (liveSession) {
+          liveSession.statusText = '网络错误';
+          liveSession.statusKind = 'error';
+          liveSession.fullText = 'Network error: ' + err.message;
+        }
+        renderConversationList();
+        if (activeId === conversationId) renderMessages();
+        else setStreamingUi();
         pushDebugEvent('network-error', { message: err.message });
       }
 
-      setStreaming(false);
+      setStreamingUi();
     });
 
     newChatEl.addEventListener('click', () => {
-      if (isStreaming) return;
       createConversation();
       renderConversationList();
       renderMessages();

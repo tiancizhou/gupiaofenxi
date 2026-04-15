@@ -99,12 +99,34 @@ def _frame_to_records(frame: Any, limit: int | None = None) -> list[dict[str, An
     return records
 
 
+def _get_price_frame(symbol: str) -> tuple[Any, str]:
+    errors: list[str] = []
+    for loader, kwargs, source_name in (
+        (
+            ak.stock_zh_a_hist,
+            {"symbol": symbol, "period": "daily", "adjust": ""},
+            "stock_zh_a_hist",
+        ),
+        (
+            ak.stock_zh_a_hist_tx,
+            {"symbol": symbol, "start_date": "", "end_date": "", "adjust": ""},
+            "stock_zh_a_hist_tx",
+        ),
+    ):
+        try:
+            return loader(**kwargs), source_name
+        except Exception as exc:
+            errors.append(f"{source_name}: {exc}")
+    raise RuntimeError(" | ".join(errors))
+
+
 def get_stock_price(symbol: str, limit: int = 20) -> dict[str, Any]:
-    frame = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="")
+    frame, source_name = _get_price_frame(symbol)
     return {
         "ok": True,
         "symbol": symbol,
         "market": infer_market(symbol),
+        "source": source_name,
         "rows": _frame_to_records(frame, limit),
     }
 

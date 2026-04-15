@@ -52,7 +52,7 @@ def load_settings(load_env: bool = True) -> Settings:
         model
         for model in (
             _build_model("LLM_GLM", "glm", "GLM", "anthropic"),
-            _build_model("LLM_OPENAI", "openai", "OpenAI Compatible", "openai"),
+            _build_model("LLM_OPENAI", "openai", "OpenAI Compatible", "anthropic"),
         )
         if model is not None
     ]

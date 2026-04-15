@@ -51,6 +51,7 @@ class _FakeResponse:
 class FakeClient:
     def __init__(self, responses):
         self._responses = list(responses)
+        self.requests = []
 
     @property
     def chat(self):
@@ -61,6 +62,7 @@ class FakeClient:
         return self
 
     def create(self, **kwargs):
+        self.requests.append(kwargs)
         return self._responses.pop(0)
 
 

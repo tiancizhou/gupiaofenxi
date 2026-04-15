@@ -13,7 +13,7 @@ def test_load_settings_reads_enabled_models(monkeypatch):
 
     assert [model.id for model in settings.models] == ["glm", "openai"]
     assert settings.get_model("glm").protocol == "anthropic"
-    assert settings.get_model("openai").protocol == "openai"
+    assert settings.get_model("openai").protocol == "anthropic"
 
 
 def test_load_settings_raises_when_no_model_is_configured(monkeypatch):
