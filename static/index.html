@@ -195,6 +195,13 @@
       return next;
     }
 
+    function createConversationId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return window.crypto.randomUUID();
+      }
+      return 'conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
+
     function loadConversations() {
       try { return JSON.parse(localStorage.getItem(conversationsKey) || '{}'); }
       catch { return {}; }
@@ -206,7 +213,7 @@
     }
 
     function createConversation() {
-      const id = crypto.randomUUID();
+      const id = createConversationId();
       conversations[id] = { title: '新对话', messages: [] };
       activeId = id;
       saveConversations();
